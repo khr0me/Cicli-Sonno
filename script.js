@@ -89,12 +89,18 @@
                 return 50;
             }
 
-            calculateOptimalWakeTimes(bedtime, fallAsleepTime) {
+            calculateOptimalWakeTimes(bedtime, fallAsleepTime, goalWakeTime) {
                 if (!fallAsleepTime) fallAsleepTime = this.FALL_ASLEEP_TIME;
                 
                 try {
                     var bedtimeMinutes = this.timeToMinutes(bedtime);
                     var sleepStartMinutes = bedtimeMinutes + fallAsleepTime;
+                    var goalWakeMinutes = goalWakeTime ? this.timeToMinutes(goalWakeTime) : null;
+                    
+                    // Se l'orario goal è prima del bedtime, assumiamo sia il giorno dopo
+                    if (goalWakeMinutes && goalWakeMinutes <= bedtimeMinutes) {
+                        goalWakeMinutes += 24 * 60;
+                    }
                     
                     var wakeTimesData = [];
                     
@@ -112,14 +118,32 @@
                             isOptimal: this.isOptimalWakeTime(cycle),
                             isNextDay: wakeupMinutes >= (24 * 60),
                             sleepEfficiency: this.calculateSleepEfficiency(cycle),
-                            recommendation: this.getRecommendation(cycle)
+                            recommendation: this.getRecommendation(cycle),
+                            distanceFromGoal: goalWakeMinutes ? Math.abs(wakeupMinutes - goalWakeMinutes) : Infinity,
+                            isClosestMatch: false
                         };
                         
                         wakeTimesData.push(wakeTimeData);
                     }
                     
-                    // Ordina per qualità del sonno (migliori prima)
+                    // Se c'è un orario goal, trova il più vicino tra quelli con buona qualità
+                    if (goalWakeMinutes) {
+                        var goodQualityTimes = wakeTimesData.filter(function(time) {
+                            return time.qualityScore >= 0.7; // Solo orari con qualità decente
+                        });
+                        
+                        if (goodQualityTimes.length > 0) {
+                            var closest = goodQualityTimes.reduce(function(prev, current) {
+                                return current.distanceFromGoal < prev.distanceFromGoal ? current : prev;
+                            });
+                            closest.isClosestMatch = true;
+                        }
+                    }
+                    
+                    // Ordina per: closest match prima, poi per qualità del sonno
                     wakeTimesData.sort(function(a, b) {
+                        if (a.isClosestMatch && !b.isClosestMatch) return -1;
+                        if (!a.isClosestMatch && b.isClosestMatch) return 1;
                         return b.qualityScore - a.qualityScore;
                     });
                     
@@ -134,6 +158,7 @@
         // Inizializzazione
         var sleepCalculator = new SleepCycleCalculator();
         var bedtimeInput = document.getElementById('bedtime');
+        var wakeGoalInput = document.getElementById('wakeGoal');
         var calculateBtn = document.getElementById('calculateBtn');
         var resultsDiv = document.getElementById('results');
 
@@ -142,39 +167,58 @@
         var currentTime = now.toTimeString().slice(0, 5);
         bedtimeInput.value = currentTime;
 
-        function calculateWakeupTimes(bedtimeInput) {
+        function calculateWakeupTimes(bedtimeInput, goalWakeTime) {
             if (!bedtimeInput) {
                 showEmptyState();
                 return;
             }
 
             try {
-                var cycles = sleepCalculator.calculateOptimalWakeTimes(bedtimeInput);
-                displayResults(cycles);
+                var cycles = sleepCalculator.calculateOptimalWakeTimes(bedtimeInput, undefined, goalWakeTime);
+                displayResults(cycles, goalWakeTime);
             } catch (error) {
                 showError('Errore nel calcolo: ' + error.message);
             }
         }
 
-        function displayResults(cycles) {
+        function displayResults(cycles, goalWakeTime) {
             var html = '<h2>⏰ Orari ottimali per svegliarsi</h2>';
+            
+            if (goalWakeTime) {
+                html += '<p class="goal-info">🎯 Ricerca vicino alle: <strong>' + goalWakeTime + '</strong></p>';
+            }
             
             for (var i = 0; i < cycles.length; i++) {
                 var cycle = cycles[i];
-                var efficiencyClass = cycle.sleepEfficiency >= 90 ? 'high-efficiency' : 
-                                    cycle.sleepEfficiency >= 80 ? 'medium-efficiency' : 'low-efficiency';
+                var classes = [];
                 
-                html += '<div class="wake-time ' + (cycle.isOptimal ? 'recommended' : '') + '">';
+                if (cycle.isOptimal) classes.push('recommended');
+                if (cycle.isClosestMatch) classes.push('closest-match');
+                
+                html += '<div class="wake-time ' + classes.join(' ') + '">';
                 html += '<div class="wake-time-header">';
                 html += '<div class="time">' + cycle.wakeTime + '</div>';
-                if (cycle.isOptimal) {
+                
+                if (cycle.isClosestMatch) {
+                    html += '<div class="closest-match-badge">Più vicino al tuo orario</div>';
+                } else if (cycle.isOptimal) {
                     html += '<div class="recommended-badge">Consigliato</div>';
                 }
+                
                 html += '</div>';
                 html += '<div class="cycle-info">' + cycle.cycle + ' cicli di sonno</div>';
                 html += '<div class="sleep-duration">Sonno totale: ' + cycle.sleepDuration + '</div>';
                 html += '<div class="sleep-efficiency">Efficienza: ' + cycle.sleepEfficiency + '%</div>';
                 html += '<div class="recommendation">' + cycle.recommendation + '</div>';
+                
+                if (goalWakeTime && cycle.distanceFromGoal < Infinity) {
+                    var diffMinutes = Math.round(cycle.distanceFromGoal);
+                    var diffHours = Math.floor(diffMinutes / 60);
+                    var remainingMins = diffMinutes % 60;
+                    var diffText = diffHours > 0 ? diffHours + 'h ' + remainingMins + 'm' : remainingMins + 'm';
+                    html += '<div class="goal-difference">Distanza dal target: ' + diffText + '</div>';
+                }
+                
                 html += '</div>';
             }
             
@@ -186,7 +230,7 @@
                 '<svg viewBox="0 0 24 24" fill="currentColor">' +
                 '<path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>' +
                 '</svg>' +
-                '<p>Seleziona l\'ora e premi il pulsante per calcolare i tuoi orari ottimali di risveglio</p>' +
+                '<p>Inserisci l\'ora di andare a letto e premi il pulsante per calcolare i tuoi orari ottimali di risveglio</p>' +
                 '</div>';
         }
 
@@ -204,13 +248,20 @@
         // Event listeners
         calculateBtn.addEventListener('click', function() {
             var bedtime = bedtimeInput.value;
+            var goalWake = wakeGoalInput.value || null;
             if (bedtime) {
-                calculateWakeupTimes(bedtime);
+                calculateWakeupTimes(bedtime, goalWake);
             }
         });
 
         bedtimeInput.addEventListener('input', updateButtonState);
         bedtimeInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                calculateBtn.click();
+            }
+        });
+
+        wakeGoalInput.addEventListener('keypress', function(e) {
             if (e.key === 'Enter') {
                 calculateBtn.click();
             }
